@@ -103,7 +103,7 @@ for p_ind in range(2):
 fig, ax = plt.subplots(figsize=(8, 4))
 
 for res_ind in range(2):
-    res = res_mat[1, res_ind]
+    res = res_mat[1, 1 - res_ind]
     
     ax.plot(
         res["n_edges"],
