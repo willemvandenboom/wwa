@@ -4,7 +4,7 @@ The G-Wishart weighted proposal algorithm
 This Python module contains functions for posterior computation using Markov
 chain Monte Carlo (MCMC) for Bayesian Gaussian graphical models. Specifically,
 it implements the G-Wishart weighted proposal algorithm
-(WWA, van den Boom et al., 2021, in preparation) and the double conditional
+(WWA, van den Boom et al., 2021, arXiv:2108.01308) and the double conditional
 Bayes factor (DCBF, Hinne et al., 2014, doi:10.1002/sta4.66) sampler.
 """
 

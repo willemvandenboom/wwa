@@ -1,6 +1,6 @@
 """
 This script produces the figure for the simulation study with uniformly sampled
-graphs in van den Boom et al. (2021, in preparation).
+graphs in van den Boom et al. (2021, arXiv:2108.01308).
 """
 
 import random

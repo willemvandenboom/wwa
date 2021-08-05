@@ -2,7 +2,8 @@
 
 Repository with the code used for the paper "The *G*-Wishart Weighted Proposal
 Algorithm: Efficient Posterior Computation for Gaussian Graphical Models" by
-Willem van den Boom, Alexandros Beskos and Maria De Iorio (in preparation).
+Willem van den Boom, Alexandros Beskos and Maria De Iorio
+([arXiv:2108.01308](https://arxiv.org/abs/2108.01308)).
 
 
 ## Description of files

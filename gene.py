@@ -1,6 +1,6 @@
 """
 This script produces the results for the application to gene expression data in
-van den Boom et al. (2021, in preparation).
+van den Boom et al. (2021, arXiv:2108.01308).
 """
 
 import igraph

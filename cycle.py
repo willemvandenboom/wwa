@@ -1,6 +1,6 @@
 """
 This script produces the figure for the simulation study with cycle graphs in
-van den Boom et al. (2021, in preparation).
+van den Boom et al. (2021, arXiv:2108.01308).
 """
 
 import igraph
