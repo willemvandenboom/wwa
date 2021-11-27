@@ -110,10 +110,6 @@ for setup_ind in range(n_setup):
     x_offset = 0.8 * (setup_ind - 0.5*(n_setup - 1)) / n_setup
     col = plt.rcParams['axes.prop_cycle'].by_key()['color'][setup_ind]
     
-    # We do a manual alpha as otherwise extra rectangle lines appear in the PDF
-    # output.
-    col_light = 1.0 - 0.3*(1.0 - np.array(matplotlib.colors.to_rgb(col)))
-    
     for p_ind in range(n_p):
         CIS_vec = CIS_mat[p_ind, :, setup_ind]
 

@@ -4,10 +4,12 @@ The G-Wishart weighted proposal algorithm
 This Python module contains functions for posterior computation using Markov
 chain Monte Carlo (MCMC) for Bayesian Gaussian graphical models. Specifically,
 it implements the G-Wishart weighted proposal algorithm
-(WWA, van den Boom et al., 2021, arXiv:2108.01308) and the double conditional
-Bayes factor (DCBF, Hinne et al., 2014, doi:10.1002/sta4.66) sampler.
+(WWA, van den Boom et al., 2021, arXiv:2108.01308), the double conditional
+Bayes factor (DCBF, Hinne et al., 2014, doi:10.1002/sta4.66) sampler and the CL
+algorithm from Cheng & Lengkoski (2012, Section 2.4, doi:10.1214/12-EJS746).
 """
 
+import ctypes
 import os
 import platform
 import subprocess
@@ -47,8 +49,10 @@ print("Compiling `wwa.cpp`...")
 subprocess.run(
     _compiler_opts + " -shared -fPIC -I/usr/local/include -std=c++17 " \
         + "-L$CONDA_PREFIX/lib -L/usr/local -Wl,-rpath,$CONDA_PREFIX/lib " \
-        + "-lmkl_rt -ligraph -Xpreprocessor -fopenmp -lomp -O2 -DNDEBUG -o " \
-        + _binary_file_name + " wwa.cpp", shell=True, check=True
+        + "-lmkl_rt -ligraph -Xpreprocessor -fopenmp -lomp -O2 -DNDEBUG " \
+        + "-Wl,-rpath,$CONDA_PREFIX/lib -L/usr/local/lib " \
+        + "-Wl,-rpath,/usr/local/lib -o " + _binary_file_name + " wwa.cpp",
+        shell=True, check=True
 )
 
 print("Finished compiling.")
@@ -60,6 +64,7 @@ _rgwish_cpp = cppyy.gbl.rgwish_cpp
 _rgwish_identity_cpp = cppyy.gbl.rgwish_identity_cpp
 _update_G_cpp = cppyy.gbl.update_G_cpp
 _update_G_DCBF_cpp = cppyy.gbl.update_G_DCBF_cpp
+_update_G_CL_cpp = cppyy.gbl.update_G_CL_cpp
 
 
 _large_int = 2**63
@@ -70,31 +75,58 @@ def random_seed(rng):
     return int(_large_int * rng.random())
 
 
-def rgwish(G, df, rate, rng):
+def rgwish(G, df, rate, rng, get_max_prime=False, decompose=True):
     """Sample from the G-Wishart distribution."""
+    if get_max_prime and not decompose:
+        raise ValueError(
+            "Graph decomposition is required to find largest prime component"
+        )
+
     K = np.empty(2 * (G.vcount(),))
+    max_prime = ctypes.c_int()
     
     try:
-        _rgwish_cpp(K, G.__graph_as_capsule(), df, rate, random_seed(rng))
+        _rgwish_cpp(
+            K, G.__graph_as_capsule(), df, rate, random_seed(rng), max_prime,
+            decompose
+        )
     except:
         print("Error in `_rgwish_cpp`. Retrying...")
-        return rgwish(G, df, rate, rng)
+        return rgwish(G, df, rate, rng, get_max_prime, decompose)
+    
+    if get_max_prime:
+        return K, max_prime.value
     
     return K
 
 
-def rgwish_identity(G, df, rng):
+def rgwish_identity(G, df, rng, get_max_prime=False, decompose=True):
     """
     Sample from the G-Wishart distribution with an identity scale matrix.
+
+    `get_max_prime` indicates whether the number of nodes of the largest prime
+    component of `G` should be returned.
     """
+    if get_max_prime and not decompose:
+        raise ValueError(
+            "Graph decomposition is required to find largest prime component"
+        )
+
     K = np.empty(2 * (G.vcount(),))
+    max_prime = ctypes.c_int()
     
     try:
-        _rgwish_identity_cpp(K, G.__graph_as_capsule(), df, random_seed(rng))
+        _rgwish_identity_cpp(
+            K, G.__graph_as_capsule(), df, random_seed(rng), max_prime,
+            decompose
+        )
     except:
         print("Error in `_rgwish_identity_cpp`. Retrying...")
-        return rgwish_identity(G, df, rng)
+        return rgwish_identity(G, df, rng, get_max_prime, decompose)
     
+    if get_max_prime:
+        return K, max_prime.value
+
     return K
 
 
@@ -103,7 +135,7 @@ df_0 = 3.0  # Degrees of freedom of the G-Wishart prior
 
 def MCMC_update(
     G, edge_prob_mat, df, rate, rng, delayed_accept=True, loc_bal=True,
-    DCBF=False
+    DCBF=False, Letac=True
 ):
     par_time = 0.0  # Time spent in parallel computations
     
@@ -123,7 +155,7 @@ def MCMC_update(
             par_time = _update_G_cpp(
                 p, adj, edge_prob_mat, df, df_0, rate, p, random_seed(rng),
                 False,  # approx
-                delayed_accept, loc_bal
+                delayed_accept, loc_bal, Letac
             )
         except:
             print("Error in `_update_G_cpp`.")
@@ -132,16 +164,33 @@ def MCMC_update(
     return G_tilde, par_time
 
 
+def MCMC_update_CL(G, K, edge_prob_mat, df, rate, rng):
+    # MCMC step of the CL algorithm
+    p = G.vcount()
+    adj = np.array(G.get_adjacency().data, dtype=int)
+    K_tilde = K.copy()
+    
+    try:
+        _update_G_CL_cpp(
+            p, adj, K_tilde, edge_prob_mat, df, df_0, rate, random_seed(rng)
+        )
+    except:
+        print("Error in `_update_G_CL_cpp`.")
+    
+    G_tilde = igraph.Graph.Adjacency(adj.tolist(), mode="undirected")
+    return G_tilde, K_tilde
+
+
 def MCMC(
     G_init, n_iter, data, edge_prob=0.5,
     rng=np.random.Generator(np.random.SFC64(seed=0)),
-    verbose=True, delayed_accept=True, loc_bal=True, DCBF=False
+    verbose=True, delayed_accept=True, loc_bal=True, DCBF=False, Letac=True
 ):
     n, p = data.shape
     U = data.T @ data
     df = df_0 + n  # Degrees of freedom of the G-Wishart posterior
     rate = np.eye(p) + U  # Rate matrix of the G-Wishart posterior
-    edge_prob_mat = np.full((p, p), fill_value=0.5)
+    edge_prob_mat = np.full((p, p), fill_value=edge_prob)
     n_edges = np.empty(n_iter, dtype=int)
     elapsed_time = np.empty(n_iter)
     par_time = np.empty(n_iter)
@@ -153,7 +202,8 @@ def MCMC(
             print("Iteration", s, end="\r")
         
         G, par_time[s] = MCMC_update(
-            G, edge_prob_mat, df, rate, rng, delayed_accept, loc_bal, DCBF
+            G, edge_prob_mat, df, rate, rng, delayed_accept, loc_bal, DCBF,
+            Letac
         )
 
         n_edges[s] = G.ecount()
@@ -180,17 +230,6 @@ if not rpackages.isinstalled("LaplacesDemon"):
 def IAT(vec):
     """Compute the integrated autocorrelation time."""
     return rpackages.importr("LaplacesDemon").IAT(vec)[0]
-
-
-def CIS(vec, time, par_time=0.0, n_cores=128):
-    """
-    Compute the cost of an independent sample.
-
-    par_time -- time spent in parallel computations (default 0.0)
-    n_cores -- number of CPU cores used for parallel computations (default 128)
-    """
-    time_128 = time - par_time + par_time*n_cores/128.0
-    return IAT(vec) * time_128 / len(vec)
 
 
 def CIS(res, n_cores=128, burnin=0):

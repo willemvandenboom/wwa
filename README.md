@@ -22,6 +22,9 @@ uniformly sampled graphs.
 * [`gene.py`](gene.py) produces the results for the application to the gene
 expression data in[`data/geneExpression.csv`](data/geneExpression.csv).
 
+* The scripts in the folder [appendix](appendix/) produce additional empirical
+results for in an appendix to the paper.
+
 * [`environment.yml`](environment.yml) details the conda environment used for
 the paper. It can be used to [recreate the environment]. The dependencies of
 [`wwa.cpp`](wwa.cpp) are detailed preceding the respective include directives.

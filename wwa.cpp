@@ -216,7 +216,6 @@ blaze::DynamicMatrix<double> rgwish_empty(
 
 
 blaze::DynamicMatrix<double> rginvwish_L_body(
-    // igraph_t* G_ptr, blaze::DynamicMatrix<double, blaze::columnMajor> W
     igraph_t* G_ptr, blaze::SymmetricMatrix<blaze::DynamicMatrix<double> > W
 ) {
     // This function follows Section 2.4 in Lenkoski (2013, arXiv:1304.1350v1).
@@ -319,17 +318,7 @@ blaze::DynamicMatrix<double> rgwish_L(
     This function follows Section 2.4 in Lenkoski (2013, arXiv:1304.1350v1).
     */
     if (is_complete(G_ptr)) return rwish(df, rate, rng);
-    return inv_pos_def(rginvwish_L_body(G_ptr, rwish(df, rate, rng)));
-}
-
-
-blaze::DynamicMatrix<double> rgwish_L_chol(
-    igraph_t* G_ptr, double df, blaze::DynamicMatrix<double>& rate, sfc64& rng
-) {
-    blaze::DynamicMatrix<double> K = rgwish_L(G_ptr, df, rate, rng);
-    blaze::LowerMatrix<blaze::DynamicMatrix<double> > chol;
-    llh(K, chol);
-    return trans(chol);
+    return inv_pos_def(rginvwish_L(G_ptr, df, rate, rng));
 }
 
 
@@ -592,8 +581,9 @@ std::vector<std::vector<double> > get_components(igraph_t* G_ptr) {
 
 
 blaze::DynamicMatrix<double> rgwish_identity(
-    igraph_t* G_ptr, double df, sfc64& rng
+    igraph_t* G_ptr, double df, sfc64& rng, int& max_prime
 ) {
+    max_prime = 1;  // Number of nodes of the largest prime component
     int p = igraph_vcount(G_ptr);
     if (igraph_ecount(G_ptr) == 0) return rgwish_empty_identity(p, df, rng);
     if (is_complete(G_ptr)) return rwish_identity(p, df, rng);
@@ -615,6 +605,7 @@ blaze::DynamicMatrix<double> rgwish_identity(
         igraph_t G_c = get_subgraph(G_ptr, component);
         
         if (is_complete(&G_c)) {
+            if (p_c > max_prime) max_prime = p_c;
             blaze::DynamicMatrix<double> K_c = rwish_identity(p_c, df, rng);
             submatrix_assign_square(K, K_c, component);
             igraph_destroy(&G_c);  // Release memory.
@@ -622,6 +613,7 @@ blaze::DynamicMatrix<double> rgwish_identity(
         }
 
         auto [primes, seps] = decompose_graph(&G_c);
+        if (primes[0].size() > max_prime) max_prime = primes[0].size();
 
         if (seps.size() == 0) {  // `G_c` is a prime graph.
             blaze::DynamicMatrix<double>
@@ -657,8 +649,151 @@ blaze::DynamicMatrix<double> rgwish_identity(
         submatrix_assign_square(Sigma, K_prime_inv, primes[0]);
 
         for (int i = 0; i < seps.size(); i++) {
+            if (primes[i + 1].size() > max_prime)
+                max_prime = primes[i + 1].size();
+
             G_prime = get_subgraph(&G_c, primes[i + 1]);
             K_prime = rgwish_L_identity(&G_prime, df, rng);
+            igraph_destroy(&G_prime);
+
+            // R = list(set(prime) - set(sep))
+            // `sep_sub` and `R_sub` contain the same indices as `sep`
+            // and `R` but then relative to the current prime subgraph.
+            // We exploit that seps[i] and primes[i + 1] are sorted.
+            std::vector<double> sep_sub(seps[i].size()),
+                R(primes[i + 1].size() - sep_sub.size()), R_sub(R.size());
+
+            int sep_index = 0;
+
+            for (int j = 0; j < primes[i + 1].size(); j++) if (
+                sep_index < seps[i].size()
+                    and primes[i + 1][j] == seps[i][sep_index]
+            ) {
+                sep_sub[sep_index] = j;
+                sep_index++;
+            } else {
+                R[j - sep_index] = primes[i + 1][j];
+                R_sub[j - sep_index] = j;
+            }
+
+            blaze::DynamicMatrix<double> Sigma_RdotS
+                = inv_pos_def(submatrix_view_square(K_prime, R_sub));
+
+            blaze::DynamicMatrix<double> Gamma_RdotS
+                = -Sigma_RdotS * submatrix_view(K_prime, R_sub, sep_sub);
+
+            auto Sigma_sep = submatrix_view_square(Sigma, seps[i]);
+            auto tmp = Gamma_RdotS * Sigma_sep;
+            submatrix_assign(Sigma, tmp, R, seps[i]);
+            submatrix_assign(Sigma, trans(tmp), seps[i], R);
+
+            blaze::DynamicMatrix<double>
+                Sigma_sep_inv = inv_pos_def(Sigma_sep);
+
+            blaze::DynamicMatrix<double>
+                Sigma_R_sep = submatrix_view(Sigma, R, seps[i]),
+                Sigma_R = declsym(
+                    Sigma_RdotS + Sigma_R_sep*Sigma_sep_inv*trans(Sigma_R_sep)
+                );
+
+            submatrix_assign_square(Sigma, Sigma_R, R);
+            
+            // Equation 7 from
+            // Carvalho et al. (2007, doi:10.1093/biomet/asm056)
+            blaze::DynamicMatrix<double> Sigma_prime_inv
+                = inv_pos_def(submatrix_view_square(Sigma, primes[i + 1]));
+
+            submatrix_assign_square(K_c, Sigma_prime_inv, primes[i + 1], true);
+            submatrix_assign_square(K_c, -Sigma_sep_inv, seps[i], true);
+        }
+
+        submatrix_assign_square(K, K_c, component);
+        igraph_destroy(&G_c);  // Release memory.
+    }
+
+    return K;
+}
+
+
+blaze::DynamicMatrix<double> rgwish_identity(
+    igraph_t* G_ptr, double df, sfc64& rng
+) {
+    int max_prime;
+    return rgwish_identity(G_ptr, df, rng, max_prime);
+}
+
+
+blaze::DynamicMatrix<double> rgwish(
+    igraph_t* G_ptr, double df, blaze::DynamicMatrix<double>& rate, sfc64& rng,
+    int& max_prime
+) {
+    max_prime = 1;  // Number of nodes of the largest prime component
+    int p = igraph_vcount(G_ptr);
+    if (igraph_ecount(G_ptr) == 0) return rgwish_empty(p, df, rate, rng);
+    if (is_complete(G_ptr)) return rwish(df, rate, rng);
+
+    // Split the graph into its connected components.
+    std::vector<std::vector<double> > components = get_components(G_ptr);
+    blaze::DynamicMatrix<double> K(p, p, 0.0);
+    boost::random::chi_squared_distribution<> rchisq(df);
+
+    for (std::vector<double> component : components) {
+        int p_c = component.size();
+
+        if (p_c == 1) {
+            int i = component[0];
+            K(i, i) = rchisq(rng) / rate(i, i);
+            continue;
+        }
+
+        igraph_t G_c = get_subgraph(G_ptr, component);
+        blaze::DynamicMatrix<double> rate_c = submatrix(rate, component);
+
+        if (is_complete(&G_c)) {
+            if (p_c > max_prime) max_prime = p_c;
+            blaze::DynamicMatrix<double> K_c = rwish(df, rate_c, rng);
+            submatrix_assign_square(K, K_c, component);
+            igraph_destroy(&G_c);  // Release memory.
+            continue;
+        }
+
+        auto [primes, seps] = decompose_graph(&G_c);
+        if (primes[0].size() > max_prime) max_prime = primes[0].size();
+
+        if (seps.size() == 0) {  // `G_c` is a prime graph.
+            blaze::DynamicMatrix<double> K_c = rgwish_L(&G_c, df, rate_c, rng);
+            submatrix_assign_square(K, K_c, component);
+            igraph_destroy(&G_c);  // Release memory.
+            continue;
+        }
+
+        // Start of the generation of the G-Wishart with the first prime.
+        igraph_t G_prime = get_subgraph(&G_c, primes[0]);
+        
+        blaze::DynamicMatrix<double> K_c(p_c, p_c, 0.0), Sigma(p_c, p_c, 0.0),
+            K_prime, K_prime_inv, rate_prime = submatrix(rate_c, primes[0]);
+
+        if (is_complete(&G_prime)) {
+            K_prime = rwish(df, rate_prime, rng);
+            K_prime_inv = inv_pos_def(K_prime);
+        } else {
+            K_prime_inv = rginvwish_L(&G_prime, df, rate_prime, rng);
+            K_prime = inv_pos_def(K_prime_inv);
+        }
+
+        igraph_destroy(&G_prime);
+
+        // Equation 7 of Carvalho et al. (2007, doi:10.1093/biomet/asm056)
+        submatrix_assign_square(K_c, K_prime, primes[0]);
+        submatrix_assign_square(Sigma, K_prime_inv, primes[0]);
+        
+        for (int i = 0; i < seps.size(); i++) {
+            if (primes[i + 1].size() > max_prime)
+                max_prime = primes[i + 1].size();
+
+            rate_prime = submatrix(rate_c, primes[i + 1]);
+            G_prime = get_subgraph(&G_c, primes[i + 1]);
+            K_prime = rgwish_L(&G_prime, df, rate_prime, rng);
             igraph_destroy(&G_prime);
 
             // R = list(set(prime) - set(sep))
@@ -723,125 +858,8 @@ blaze::DynamicMatrix<double> rgwish_identity(
 blaze::DynamicMatrix<double> rgwish(
     igraph_t* G_ptr, double df, blaze::DynamicMatrix<double>& rate, sfc64& rng
 ) {
-    int p = igraph_vcount(G_ptr);
-    if (igraph_ecount(G_ptr) == 0) return rgwish_empty(p, df, rate, rng);
-    if (is_complete(G_ptr)) return rwish(df, rate, rng);
-
-    // Split the graph into its connected components.
-    std::vector<std::vector<double> > components = get_components(G_ptr);
-    blaze::DynamicMatrix<double> K(p, p, 0.0);
-    boost::random::chi_squared_distribution<> rchisq(df);
-
-    for (std::vector<double> component : components) {
-        int p_c = component.size();
-
-        if (p_c == 1) {
-            int i = component[0];
-            K(i, i) = rchisq(rng) / rate(i, i);
-            continue;
-        }
-
-        igraph_t G_c = get_subgraph(G_ptr, component);
-        blaze::DynamicMatrix<double> rate_c = submatrix(rate, component);
-
-        if (is_complete(&G_c)) {
-            blaze::DynamicMatrix<double> K_c = rwish(df, rate_c, rng);
-            submatrix_assign_square(K, K_c, component);
-            igraph_destroy(&G_c);  // Release memory.
-            continue;
-        }
-
-        auto [primes, seps] = decompose_graph(&G_c);
-
-        if (seps.size() == 0) {  // `G_c` is a prime graph.
-            blaze::DynamicMatrix<double> K_c = rgwish_L(&G_c, df, rate_c, rng);
-            submatrix_assign_square(K, K_c, component);
-            igraph_destroy(&G_c);  // Release memory.
-            continue;
-        }
-
-        // Start of the generation of the G-Wishart with the first prime.
-        igraph_t G_prime = get_subgraph(&G_c, primes[0]);
-        
-        blaze::DynamicMatrix<double> K_c(p_c, p_c, 0.0), Sigma(p_c, p_c, 0.0),
-            K_prime, K_prime_inv, rate_prime = submatrix(rate_c, primes[0]);
-
-        if (is_complete(&G_prime)) {
-            K_prime = rwish(df, rate_prime, rng);
-            K_prime_inv = inv_pos_def(K_prime);
-        } else {
-            K_prime_inv = rginvwish_L(&G_prime, df, rate_prime, rng);
-            K_prime = inv_pos_def(K_prime_inv);
-        }
-
-        igraph_destroy(&G_prime);
-
-        // Equation 7 of Carvalho et al. (2007, doi:10.1093/biomet/asm056)
-        submatrix_assign_square(K_c, K_prime, primes[0]);
-        submatrix_assign_square(Sigma, K_prime_inv, primes[0]);
-        
-        for (int i = 0; i < seps.size(); i++) {
-            rate_prime = submatrix(rate_c, primes[i + 1]);
-            G_prime = get_subgraph(&G_c, primes[i + 1]);
-            K_prime = rgwish_L(&G_prime, df, rate_prime, rng);
-            igraph_destroy(&G_prime);
-
-            // R = list(set(prime) - set(sep))
-            // `sep_sub` and `R_sub` contain the same indices as `sep`
-            // and `R` but then relative to the current prime subgraph.
-            // We exploit that seps[i] and primes[i + 1] are sorted.
-            std::vector<double> sep_sub(seps[i].size()),
-                R(primes[i + 1].size() - sep_sub.size()), R_sub(R.size());
-
-            int sep_index = 0;
-
-            for (int j = 0; j < primes[i + 1].size(); j++) if (
-                sep_index < seps[i].size()
-                    and primes[i + 1][j] == seps[i][sep_index]
-            ) {
-                sep_sub[sep_index] = j;
-                sep_index++;
-            } else {
-                R[j - sep_index] = primes[i + 1][j];
-                R_sub[j - sep_index] = j;
-            }
-
-            blaze::DynamicMatrix<double> Sigma_RdotS
-                = inv_pos_def(submatrix_view_square(K_prime, R_sub));
-
-            blaze::DynamicMatrix<double> Gamma_RdotS
-                = -Sigma_RdotS * submatrix_view(K_prime, R_sub, sep_sub);
-
-            auto Sigma_sep = submatrix_view_square(Sigma, seps[i]);
-            auto tmp = Gamma_RdotS * Sigma_sep;
-            submatrix_assign(Sigma, tmp, R, seps[i]);
-            submatrix_assign(Sigma, trans(tmp), seps[i], R);
-
-            blaze::DynamicMatrix<double>
-                Sigma_sep_inv = inv_pos_def(Sigma_sep);
-
-            blaze::DynamicMatrix<double>
-                Sigma_R_sep = submatrix_view(Sigma, R, seps[i]),
-                Sigma_R = declsym(
-                    Sigma_RdotS + Sigma_R_sep*Sigma_sep_inv*trans(Sigma_R_sep)
-                );
-
-            submatrix_assign_square(Sigma, Sigma_R, R);
-            
-            // Equation 7 from
-            // Carvalho et al. (2007, doi:10.1093/biomet/asm056)
-            blaze::DynamicMatrix<double> Sigma_prime_inv
-                = inv_pos_def(submatrix_view_square(Sigma, primes[i + 1]));
-
-            submatrix_assign_square(K_c, Sigma_prime_inv, primes[i + 1], true);
-            submatrix_assign_square(K_c, -Sigma_sep_inv, seps[i], true);
-        }
-
-        submatrix_assign_square(K, K_c, component);
-        igraph_destroy(&G_c);  // Release memory.
-    }
-
-    return K;
+    int max_prime;
+    return rgwish(G_ptr, df, rate, rng, max_prime);
 }
 
 
@@ -1003,7 +1021,7 @@ std::tuple<
 > locally_balanced_proposal(
     blaze::DynamicMatrix<double>& K, blaze::DynamicMatrix<int>& adj, int n_e,
     blaze::DynamicMatrix<double>& edge_prob_mat, double df_0,
-    blaze::DynamicMatrix<double>& rate
+    blaze::DynamicMatrix<double>& rate, bool Letac = true
 ) {
     /*
     Compute the locally balanced proposal from
@@ -1053,7 +1071,7 @@ std::tuple<
                 + log_N_tilde(
                     Phi, rate(perm_inv[p - 1], perm_inv[p - 1]),
                     rate(perm_inv[p - 2], perm_inv[p - 1])
-                ) + log_norm_ratio_Letac(adj, i, j, df_0)
+                ) + Letac*log_norm_ratio_Letac(adj, i, j, df_0)
         ));
     }
 
@@ -1090,7 +1108,8 @@ double update_single_edge(
     blaze::DynamicMatrix<double>& edge_prob_mat, double df, double df_0,
     blaze::DynamicMatrix<double>& rate, sfc64& rng,
     blaze::LowerMatrix<blaze::DynamicMatrix<double> >& Phi,
-    bool approx = false, bool delayed_accept = true, bool loc_bal = true
+    bool approx = false, bool delayed_accept = true, bool loc_bal = true,
+    bool Letac = true
 ) {
     /*
     MCMC step that attempts to update a single edge
@@ -1117,6 +1136,10 @@ double update_single_edge(
 
     `loc_bal` indicates whether to use the locally balanced proposal from
     Zanella (2019, doi:10.1080/01621459.2019.1585255).
+
+    `Letac` indicates whether to use the approximation for the ratio of
+    normalization constants from Letac et al. (2018, arXiv:1706.04416v2) or to
+    instead approximate the ratio by one.
     */
     if (approx and delayed_accept) throw std::runtime_error(
         "`approx` and `delayed_accept` cannot be true simultaneously."
@@ -1135,7 +1158,7 @@ double update_single_edge(
     if (loc_bal) {
         // Compute the locally balanced proposal.
         auto [Q, log_Q, tmp] = locally_balanced_proposal(
-            K, adj, n_e, edge_prob_mat, df_0, rate
+            K, adj, n_e, edge_prob_mat, df_0, rate, Letac
         );
 
         par_time += tmp;
@@ -1244,7 +1267,7 @@ double update_single_edge(
         update_K_from_Phi(p, j, perm, K, Phi);
 
         auto [Q_tilde, log_Q_tilde, tmp] = locally_balanced_proposal(
-            K, adj, n_e_tilde, edge_prob_mat, df_0, rate
+            K, adj, n_e_tilde, edge_prob_mat, df_0, rate, Letac
         );
 
         par_time += tmp;
@@ -1253,7 +1276,7 @@ double update_single_edge(
 
     if (delayed_accept or approx) {
         log_target_ratio_approx = log_prior_ratio + exponent*(
-            log_N_tilde_post + log_norm_ratio_Letac(adj, i, j, df_0)
+            log_N_tilde_post + Letac*log_norm_ratio_Letac(adj, i, j, df_0)
         );
 
         log_g_x_y
@@ -1341,7 +1364,7 @@ double update_single_edge(
 double update_G_cpp(
     int p, long* adj_in, double* edge_prob_mat_in, double df, double df_0,
     double* rate_in, int n_edge, long seed, bool approx = false,
-    bool delayed_accept = true, bool loc_bal = true
+    bool delayed_accept = true, bool loc_bal = true, bool Letac = true
 ) {
     /*
     `p` is the number of nodes.
@@ -1368,7 +1391,7 @@ double update_G_cpp(
 
     for (int i = 0; i < n_edge; i++) par_time += update_single_edge(
         K, adj, n_e, edge_prob_mat, df, df_0, rate, rng, Phi, approx,
-        delayed_accept, loc_bal
+        delayed_accept, loc_bal, Letac
     );
 
     // Copy `adj` to `adj_in`.
@@ -1391,13 +1414,8 @@ void update_G_DCBF_cpp(
 
     `p` is the number of nodes.
     `adj_in` is the adjacency matrix of the graph.
-    `n_edge` is the number of single edge MCMC steps that are attempted.
 
     `adj_in` is modified in place.
-
-    Updating an `igraph_t` one edge at a time comes with a notable
-    computational cost if `approx = true`. We therefore work with the
-    adjacency matrix.
     */
     sfc64 rng(seed);
     blaze::DynamicMatrix<int> adj(p, p, adj_in);
@@ -1483,13 +1501,196 @@ void update_G_DCBF_cpp(
 }
 
 
+void update_K(
+    blaze::DynamicMatrix<double>& K, igraph_t& G, double df,
+    blaze::DynamicMatrix<double>& rate, sfc64& rng
+) {
+    /*
+    Update K using the maximum clique block Gibbs sampler
+    (Wang & Li, 2012, Section 2.4, doi:10.1214/12-EJS669).
+    */
+    int p = igraph_vcount(&G);
+    igraph_vector_ptr_t igraph_cliques;
+    igraph_vector_ptr_init(&igraph_cliques, 0);
+    igraph_maximal_cliques(&G, &igraph_cliques, 0, 0);
+
+    for (int i = 0; i < igraph_vector_ptr_size(&igraph_cliques); i++) {
+        igraph_vector_t* clique_ptr
+            = (igraph_vector_t*) igraph_vector_ptr_e(&igraph_cliques, i);
+
+        std::vector<int> clique(igraph_vector_size(clique_ptr)),
+            not_clique(p - clique.size());
+
+        for (int j = 0; j < clique.size(); j++)
+            clique[j] = igraph_vector_e(clique_ptr, j);
+
+        std::sort(clique.begin(), clique.end());
+        int tmp_ind = 0;
+
+        for (int j = 0; j < p; j++) {
+            if (tmp_ind < clique.size() and j == clique[tmp_ind]) {
+                tmp_ind++;
+            } else {
+                not_clique[j - tmp_ind] = j;
+            }
+        }
+
+        blaze::DynamicMatrix<double> chol_inv_B,
+            rate_clique = submatrix_view_square(rate, clique),
+            K_not_clique = submatrix_view_square(K, not_clique),
+            A = rwish(df, rate_clique, rng),
+            B = submatrix_view(K, not_clique, clique);
+
+        blaze::LowerMatrix<blaze::DynamicMatrix<double> > chol;
+        llh(K_not_clique, chol);
+        solve(chol, chol_inv_B, B);
+
+        submatrix_assign_square(
+            K, A + declsym(trans(chol_inv_B) * chol_inv_B), clique
+        );
+    }
+
+    IGRAPH_VECTOR_PTR_SET_ITEM_DESTRUCTOR(
+        &igraph_cliques, igraph_vector_destroy
+    );
+
+    igraph_vector_ptr_destroy_all(&igraph_cliques);
+}
+
+
+void update_G_CL_cpp(
+    int p, long* adj_in, double* K_in, double* edge_prob_mat_in, double df,
+    double df_0, double* rate_in, long seed
+) {
+    /*
+    This impelements the CL algorithm from
+    Cheng & Lengkoski (2012, Section 2.4, doi:10.1214/12-EJS746).
+
+    `p` is the number of nodes.
+    `adj_in` is the adjacency matrix of the graph.
+    `K_in` is the precision matrix.
+
+    `adj_in` and `K_in` are modified in place.
+    */
+    sfc64 rng(seed);
+    blaze::DynamicMatrix<int> adj(p, p, adj_in);
+
+    blaze::DynamicMatrix<double> K(p, p, K_in), rate(p, p, rate_in),
+        rate_0(p, p, 0.0), edge_prob_mat(p, p, edge_prob_mat_in);
+
+    for (int i = 0; i < p; i++) rate_0(i, i) = 1.0;
+    int n_e = sum(adj) / 2;
+    blaze::LowerMatrix<blaze::DynamicMatrix<double> > Phi(p);
+    boost::random::uniform_01<double> runif;
+    boost::random::chi_squared_distribution<> rchisq(df);
+    boost::random::normal_distribution<> rnorm(0.0, 1.0);
+
+    for (int rep = 0; rep < p; rep++) {
+        // Sample uniformly which edge (i, j) to update.
+        boost::random::uniform_int_distribution<int>
+            r_edge(1, p * (p - 1) / 2);
+
+        int i = 0, j = r_edge(rng);
+        while (j > p - i - 1) j -= p - ++i;
+        j += i;
+        bool add = not adj(i, j);  // Whether an edge is being added
+        int exponent = 2*add - 1, n_e_tilde = n_e + exponent;
+        auto [perm, perm_inv] = permute_e_last(i, j, p);
+        blaze::DynamicMatrix<double> K_perm = permute_mat(K, perm_inv);
+        llh(K_perm, Phi);
+
+        double rate_pp = rate(perm_inv[p - 1], perm_inv[p - 1]),
+            rate_1p = rate(perm_inv[p - 2], perm_inv[p - 1]),
+            log_prior_ratio = exponent * (
+                std::log(edge_prob_mat(i, j))
+                    - std::log1p(-edge_prob_mat(i, j))
+            ),
+            log_N_tilde_post = log_N_tilde(Phi, rate_pp, rate_1p);
+
+        // Decide whether to promote `G_tilde`
+        if (
+            std::log(runif(rng)) < log_prior_ratio + exponent*log_N_tilde_post
+        ) {
+            // Double Metropolis-Hastings step to avoid evaluation of
+            // normalization constants
+            blaze::DynamicMatrix<int> adj_perm = permute_mat(adj, perm_inv);
+            adj_perm(p - 2, p - 1) = add;
+            adj_perm(p - 1, p - 2) = add;
+            blaze::DynamicMatrix<double> K_0_tilde(K_perm);
+            igraph_t G_perm = adj2igraph(adj_perm, n_e_tilde);
+            update_K(K_0_tilde, G_perm, df_0, rate_0, rng);
+            igraph_destroy(&G_perm);
+            blaze::LowerMatrix<blaze::DynamicMatrix<double> > Phi_0_tilde;
+            llh(K_0_tilde, Phi_0_tilde);
+
+            // The log of the function N from
+            // Cheng & Lengkoski (2012, page 2314, doi:10.1214/12-EJS746) with
+            // identity rate matrix
+            double log_N_tilde_prior
+                = std::log(Phi_0_tilde(p - 2, p - 2)) + 0.5*std::pow(
+                    sum(
+                        submatrix(Phi_0_tilde, p - 2, 0, 1, p - 2)
+                            % submatrix(Phi_0_tilde, p - 1, 0, 1, p - 2)
+                    ) / Phi_0_tilde(p - 2, p - 2),
+                    2
+                );
+
+            double log_target_ratio = log_prior_ratio + exponent*(
+                log_N_tilde_post - log_N_tilde_prior
+            );
+
+            if (std::log(runif(rng)) < -exponent * log_N_tilde_prior) {
+                // Update the graph.
+                adj(i, j) = add;
+                adj(j, i) = add;
+                n_e = n_e_tilde;
+            }
+        }
+
+        // Update `Phi(p - 1, p - 2)` and `Phi(p - 1, p - 1)` according to the
+        // current graph.
+        if (adj(i, j)) {  // The graph contains (`i`, `j`).
+            Phi(p - 1, p - 2) = rnorm(rng)/std::sqrt(rate_pp)
+                - Phi(p - 2, p - 2)*rate_1p/rate_pp;
+        } else {  // The graph does not contain (`i`, `j`)
+            Phi(p - 1, p - 2) = -sum(
+                submatrix(Phi, p - 2, 0, 1, p - 2)
+                    % submatrix(Phi, p - 1, 0, 1, p - 2)
+            ) / Phi(p - 2, p - 2);
+        }
+
+        Phi(p - 1, p - 1) = std::sqrt(rchisq(rng) / rate_pp);
+        update_K_from_Phi(p, j, perm, K, Phi);
+    }
+
+    // Update K
+    igraph_t G = adj2igraph(adj, n_e);
+    update_K(K, G, df, rate, rng);
+    igraph_destroy(&G);
+
+    // Copy `adj` to `adj_in` and `K` to `K_in`.
+    for (int i = 0; i < p; i++)  {
+        int ixp = i * p;
+
+        for (int j = 0; j < p; j++) {
+            adj_in[ixp + j] = adj(i, j);
+            K_in[ixp + j] = K(i, j);
+        }
+    }
+}
+
+
 void rgwish_cpp(
-    double* K_out, igraph_t* G_ptr, double df, double* rate_in, long seed
+    double* K_out, igraph_t* G_ptr, double df, double* rate_in, long seed,
+    int& max_prime, bool decompose = true
 ) {
     sfc64 rng(seed);
     int p = igraph_vcount(G_ptr);
     blaze::DynamicMatrix<double> rate(p, p, rate_in);
-    blaze::DynamicMatrix<double> K = rgwish(G_ptr, df, rate, rng);
+
+    blaze::DynamicMatrix<double> K = decompose
+        ? rgwish(G_ptr, df, rate, rng, max_prime)
+        : rgwish_L(G_ptr, df, rate, rng);
 
     // Copy `K` to `K_out`.
     for (int i = 0; i < p; i++) {
@@ -1500,11 +1701,15 @@ void rgwish_cpp(
 
 
 void rgwish_identity_cpp(
-    double* K_out, igraph_t* G_ptr, double df, long seed
+    double* K_out, igraph_t* G_ptr, double df, long seed, int& max_prime,
+    bool decompose = true
 ) {
     sfc64 rng(seed);
     int p = igraph_vcount(G_ptr);
-    blaze::DynamicMatrix<double> K = rgwish_identity(G_ptr, df, rng);
+
+    blaze::DynamicMatrix<double> K = decompose
+        ? rgwish_identity(G_ptr, df, rng, max_prime)
+        : rgwish_L_identity(G_ptr, df, rng);
 
     // Copy `K` to `K_out`.
     for (int i = 0; i < p; i++) {
