@@ -3,7 +3,8 @@
 Repository with the code used for the paper "The *G*-Wishart Weighted Proposal
 Algorithm: Efficient Posterior Computation for Gaussian Graphical Models" by
 Willem van den Boom, Alexandros Beskos and Maria De Iorio
-([arXiv:2108.01308](https://arxiv.org/abs/2108.01308)).
+([arXiv:2108.01308](https://arxiv.org/abs/2108.01308) and
+[doi:10.1080/10618600.2022.2050250]).
 
 
 ## Description of files
@@ -30,4 +31,5 @@ the paper. It can be used to [recreate the environment]. The dependencies of
 [`wwa.cpp`](wwa.cpp) are detailed preceding the respective include directives.
 
 
+[doi:10.1080/10618600.2022.2050250]: https://doi.org/10.1080/10618600.2022.2050250
 [recreate the environment]: https://docs.conda.io/projects/conda/en/latest/user-guide/tasks/manage-environments.html#creating-an-environment-from-an-environment-yml-file
