@@ -6,6 +6,11 @@ Willem van den Boom, Alexandros Beskos and Maria De Iorio
 ([arXiv:2108.01308](https://arxiv.org/abs/2108.01308) and
 [doi:10.1080/10618600.2022.2050250]).
 
+The implementation uses Python and C++ code. For a version using Rcpp that
+might be easier to compile, see [here]. Note that the Rcpp version does not use
+graph decomposition when sampling from the *G*-Wishart distribution, unlike the
+version in this repository.
+
 
 ## Description of files
 
@@ -32,4 +37,5 @@ the paper. It can be used to [recreate the environment]. The dependencies of
 
 
 [doi:10.1080/10618600.2022.2050250]: https://doi.org/10.1080/10618600.2022.2050250
+[here]: https://github.com/willemvandenboom/graph-sphere/blob/fbd881fef37003a3eaaa60723a8a73a3d2979b60/graph_sphere_MCMC.R#L40-L73
 [recreate the environment]: https://docs.conda.io/projects/conda/en/latest/user-guide/tasks/manage-environments.html#creating-an-environment-from-an-environment-yml-file
